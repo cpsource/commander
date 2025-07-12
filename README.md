@@ -188,6 +188,27 @@ git push origin my-feature  # This pushes to THEIR fork
 # Then they create PR via GitHub web interface
 ```
 
+## Example
+
+An hello world example is included. To execute, do:
+
+```bash
+cd examples/hello_world'
+```
+
+and follow the directions in the README.md file there.
+
+### A sense of the power of commander is presented
+
+This example should give you a sense of the power of commander. In the example,
+I start out with an absolutely minimum hello_world.html as follows:
+
+```html
+Hello World ! Congratuations, you have built your first successful commander project.
+```
+
+and I end up with a fully functional production ready web page.
+
 ## License
 
 See the LICENSE file in this respository.
