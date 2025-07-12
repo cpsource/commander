@@ -209,6 +209,55 @@ Hello World ! Congratuations, you have built your first successful commander pro
 
 and I end up with a fully functional production ready web page.
 
+## Future Work
+
+### Self-Improving AI Systems
+
+An interesting discovery emerged when I finished the Commander prototype: **I used Commander to improve itself**. The AI understood its own codebase and could make meaningful enhancements to its functionality. This self-reflective capability suggests a fundamental building block for Artificial General Intelligence (AGI) development.
+
+### Paradigm Shift: From Human-Directed to AI-Autonomous
+
+The current workflow follows a human-centric pattern:
+1. Human writes `commander.txt` instructions
+2. Commander bundles files and sends to AI
+3. AI processes and returns modified code
+4. Commander applies changes to the codebase
+
+**But what if we inverted this relationship?** Instead of the human directing the AI, the human's machine becomes a collaborative partner in an AI-driven development cycle.
+
+### Proposed AGI Development Framework
+
+Imagine an initial system prompt like:
+
+> *"You are designing an AGI system to run on this machine. You may respond with Python programs that build neural networks, run test cases, and report results back to you. You will evaluate these results and iteratively improve the system."*
+
+### Available Toolbox
+
+The AI would have access to a comprehensive development environment:
+
+1. **🤗 HuggingFace Models** - Download and run any open-source model
+2. **🗄️ Vector Database** - Long-term associative memory storage  
+3. **💾 Traditional Database** - Structured data persistence
+4. **🎮 6GB GPU** - Hardware acceleration for model training/inference
+5. **🌐 Web Access** - Tools like `requests` for internet connectivity
+6. **❓ Human Interface** - Ability to ask clarifying questions
+7. **🔍 TAVILY Search** - Real-time web search capabilities
+8. **🛠️ Extensible Toolkit** - AI can create and integrate new tools as needed
+
+### The Vision
+
+This framework could enable:
+- **Autonomous code improvement** cycles
+- **Self-directed learning** from online resources
+- **Dynamic tool creation** based on emerging needs
+- **Collaborative human-AI development** partnerships
+- **Recursive self-enhancement** leading toward AGI
+
+### Implications
+
+Commander's ability to understand and modify itself represents more than just a useful development tool—it may be a stepping stone toward systems that can autonomously evolve, learn, and improve without constant human oversight.
+
+The question isn't whether this is possible, but rather: *How quickly can we responsibly explore these capabilities?*
 ## License
 
 See the LICENSE file in this respository.
