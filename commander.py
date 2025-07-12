@@ -200,6 +200,12 @@ class ResponseParser:
         """Write the modified files back to disk"""
         for filename, content in modified_files.items():
             try:
+                # Ensure directory structure exists (equivalent to mkdir -p)
+                file_path = Path(filename)
+                if file_path.parent != Path('.'):  # Only if not in current directory
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    print(f"📂 Created directory: {file_path.parent}")
+                
                 # Create backup
                 backup_name = f"{filename}.backup"
                 if os.path.exists(filename):
@@ -332,4 +338,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
