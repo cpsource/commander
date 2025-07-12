@@ -174,6 +174,20 @@ Commander is designed to be extensible. To add support for new file types:
 2. Add appropriate file extension handling in `find_files()`
 3. Test with sample files of the new type
 
+I accept and welcome pull requests. Do so by:
+
+```bash
+# Contributor workflow (all HTTPS)
+git clone https://github.com/yourusername/commander.git
+cd commander
+git checkout -b my-feature
+# make changes
+git add .
+git commit -m "Add cool feature"
+git push origin my-feature  # This pushes to THEIR fork
+# Then they create PR via GitHub web interface
+```
+
 ## License
 
 See the LICENSE file in this respository.
