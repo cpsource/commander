@@ -176,7 +176,7 @@ Commander is designed to be extensible. To add support for new file types:
 
 ## License
 
-This project is open source. Feel free to modify and distribute according to your needs.
+See the LICENSE file in this respository.
 
 ---
 
