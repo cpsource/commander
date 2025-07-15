@@ -1,0 +1,12 @@
+#
+# Comments are not sent to AI
+#
+# PROJECT CONTEXT
+
+# RESPONSE REQUIREMENTS
+- Only return complete files that need to be changed
+- If a file doesn't need modification, don't include it in your response
+- Ensure all code is syntactically correct and follows best practices for the respective language
+- Return the full edited file content, not diff/patch files
+- Use the format: ---<full-file-specification>--- followed by ```language and the complete file content followed by ```
+

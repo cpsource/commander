@@ -12,6 +12,8 @@ Usage:
     -x: Comma-separated list of file extensions (default: "py")
         Example: -x "py,json,md" or -x "js,html,css"
     -y: Automatically confirm file modifications (skip confirmation prompt)
+    
+    .skip-commander: Place this file in any directory to skip processing that directory
 """
 
 import os
@@ -25,6 +27,18 @@ from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.schema import HumanMessage, SystemMessage
 
+def read_system_txt(filename: str = "system.txt") -> str:
+    """Read system.txt, skipping comment lines starting with '#'."""
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        non_comment_lines = [line for line in lines if not line.strip().startswith('#')]
+        return "".join(non_comment_lines).strip()
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        print(f"Error reading {filename}: {e}")
+        return ""
 
 class FileProcessor:
     """Handles finding and reading files with specified extensions"""
@@ -33,26 +47,95 @@ class FileProcessor:
         self.recursive = recursive
         self.extensions = extensions if extensions else ['py']
         self.files_found = []
+        self.skipped_directories = []
         
+    def _should_skip_directory(self, directory_path: Path) -> bool:
+        """Check if directory contains .skip-commander file"""
+        skip_file = directory_path / ".skip-commander"
+        return skip_file.exists()
+    
+    def _find_files_non_recursive(self, directory: str = ".") -> List[str]:
+        """Find files in current directory only (non-recursive mode)"""
+        found_files = []
+        directory_path = Path(directory)
+        
+        # Check if current directory should be skipped
+        if self._should_skip_directory(directory_path):
+            print(f"⏭️  Skipping directory: {directory_path} (contains .skip-commander)")
+            self.skipped_directories.append(str(directory_path))
+            return found_files
+        
+        # Search for files with specified extensions in current directory only
+        for file_type in self.extensions:
+            file_type = file_type.lstrip('.')
+            pattern = f"*.{file_type}"
+            found_files.extend(directory_path.glob(pattern))
+        
+        return [str(f) for f in found_files]
+    
+    def _find_files_recursive(self, directory: str = ".") -> List[str]:
+        """Find files recursively, respecting .skip-commander files"""
+        found_files = []
+        directory_path = Path(directory)
+        
+        # Check if root directory should be skipped
+        if self._should_skip_directory(directory_path):
+            print(f"⏭️  Skipping directory: {directory_path} (contains .skip-commander)")
+            self.skipped_directories.append(str(directory_path))
+            return found_files
+        
+        # Process current directory first
+        for file_type in self.extensions:
+            file_type = file_type.lstrip('.')
+            # Find files in current directory
+            for file_path in directory_path.glob(f"*.{file_type}"):
+                if file_path.is_file():
+                    found_files.append(file_path)
+        
+        # Recursively process subdirectories
+        for item in directory_path.iterdir():
+            if item.is_dir():
+                # Skip hidden directories and __pycache__
+                if item.name.startswith('.') or item.name.startswith('__pycache__'):
+                    continue
+                
+                # Check if subdirectory should be skipped
+                if self._should_skip_directory(item):
+                    print(f"⏭️  Skipping directory: {item} (contains .skip-commander)")
+                    self.skipped_directories.append(str(item))
+                    continue
+                
+                # Recursively search subdirectory
+                subdirectory_files = self._find_files_recursive(str(item))
+                found_files.extend(Path(f) for f in subdirectory_files)
+        
+        return [str(f) for f in found_files]
+    
     def find_files(self, directory: str = ".") -> List[str]:
         """Find all files with specified extensions in the directory"""
-        found_files = []
+        if self.recursive:
+            found_files = self._find_files_recursive(directory)
+        else:
+            found_files = self._find_files_non_recursive(directory)
         
-        # Search one extension at a time
-        for file_type in self.extensions:
-            # Remove leading dot if present
-            file_type = file_type.lstrip('.')
-            pattern = f"**/*.{file_type}" if self.recursive else f"*.{file_type}"
-            found_files.extend(Path(directory).glob(pattern))
-        
-        # Filter out __pycache__ and other unwanted directories
+        # Filter out unwanted files and convert to strings
         filtered_files = []
         for file_path in found_files:
+            file_path_obj = Path(file_path)
+            
+            # Skip files in __pycache__ or hidden directories
             if not any(part.startswith('__pycache__') or part.startswith('.') 
-                      for part in file_path.parts):
-                filtered_files.append(str(file_path))
+                      for part in file_path_obj.parts):
+                filtered_files.append(str(file_path_obj))
         
         self.files_found = filtered_files
+        
+        # Report skipped directories
+        if self.skipped_directories:
+            print(f"\n📁 Skipped {len(self.skipped_directories)} directories due to .skip-commander:")
+            for skipped_dir in self.skipped_directories:
+                print(f"  • {skipped_dir}")
+        
         return filtered_files
     
     def read_file_content(self, file_path: str) -> str:
@@ -147,10 +230,11 @@ FILES TO PROCESS:
         prompt += """
 
 RESPONSE FORMAT:
-Please return the modified files in the exact same format, with each file preceded by its filename marker and appropriate code fencing:
----filename.ext---
-```language
-[modified code here]
+For any files you wish to return in your reply, they must have this format:
+
+---<full-file-spec>---
+```<filetype>
+< file contents here >
 ```
 
 Only return files that need to be changed. If a file doesn't need modification, don't include it in your response.
@@ -179,21 +263,81 @@ Ensure all code is syntactically correct and follows best practices for the resp
 
 class ResponseParser:
     """Parses Gemini's response and extracts modified files"""
-    
+
     def parse_response(self, response: str) -> Dict[str, str]:
-        """Parse Gemini's response and extract modified files"""
+        """Parse Gemini's response and extract modified files using simple line-by-line approach."""
         modified_files = {}
         
-        # Pattern to match file blocks: ---filename--- followed by ```language code ```
-        # Made more flexible to handle different languages
-        pattern = r'---([^-]+)---\s*```(?:\w+)?\s*\n(.*?)\n```'
-        matches = re.findall(pattern, response, re.DOTALL)
+        # Convert response to lines for processing
+        lines = response.split('\n')
         
-        for filename, code in matches:
-            filename = filename.strip()
-            code = code.strip()
-            modified_files[filename] = code
+        i = 0
+        # Skip first line if it's ```tool_code
+        if i < len(lines) and lines[i].strip() == '```tool_code':
+            print("✅ Skipping ```tool_code line")
+            i = 1
+        
+        current_file = None
+        file_content = []
+        
+        while i < len(lines):
+            line = lines[i]
+            line_stripped = line.strip()
             
+            # Check if we're starting a new file
+            if line_stripped.startswith('---') and line_stripped.endswith('---') and current_file is None:
+                # Extract filespec by chopping off first 3 and last 3 characters
+                filespec = line_stripped[3:-3]
+                print(f"📄 Found file: {filespec}")
+                
+                # Skip the next line (the ```<type> line)
+                i += 1
+                if i < len(lines):
+                    print(f"   Skipping: {lines[i].strip()}")
+                    i += 1
+                
+                # Start collecting content for this file
+                current_file = filespec
+                file_content = []
+                print(f"✍️  Processing: {filespec}")
+            
+            # Check if we're ending current file
+            elif line_stripped == '```' and current_file is not None:
+                # Determine whether we should skip this ``` line
+                next_line_is_new_file_or_eof = False
+                if (i + 1) < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if next_line.startswith('---') and next_line.endswith('---'):
+                        next_line_is_new_file_or_eof = True
+                else:
+                    # We are at end-of-file
+                    next_line_is_new_file_or_eof = True
+
+                if next_line_is_new_file_or_eof:
+                    # Do NOT store this ``` line
+                    content = '\n'.join(file_content)
+                    modified_files[current_file] = content
+                    print(f"✅ Completed: {current_file} ({len(content)} characters)")
+                    current_file = None
+                    file_content = []
+                    i += 1  # skip the ``` line
+                    continue
+                else:
+                    # This ``` belongs in the file content
+                    file_content.append(line)
+            
+            # Collect content for current file
+            elif current_file is not None:
+                file_content.append(line)
+            
+            i += 1
+        
+        # Handle any remaining open file (EOF case)
+        if current_file is not None and file_content:
+            content = '\n'.join(file_content)
+            modified_files[current_file] = content
+            print(f"✅ Completed: {current_file} (EOF) ({len(content)} characters)")
+        
         return modified_files
     
     def write_modified_files(self, modified_files: Dict[str, str]) -> None:
@@ -254,33 +398,75 @@ def main():
                        help="Comma-separated list of file extensions (default: py). Example: 'py,json,md'")
     parser.add_argument("-y", "--yes", action="store_true",
                        help="Automatically confirm file modifications (skip confirmation prompt)")
+    parser.add_argument("-f", "--files", type=str,
+                        help="Comma-separated list of files to process instead of searching the directory tree."
+    )
+
     args = parser.parse_args()
-    
+
+    file_list = []
+    if args.files:
+        file_list = [f.strip() for f in args.files.split(",") if f.strip()]
+
     # Parse extensions
     extensions = parse_extensions(args.extensions)
     
     print("🚀 Commander.py - Multi-Language File Processor")
     print("=" * 50)
     print(f"📋 Target extensions: {', '.join(extensions)}")
+    print(f"💡 Tip: Place '.skip-commander' file in directories to skip them")
     
     # Step 1: Find files
-    print(f"📂 Finding files {'(recursive)' if args.recursive else '(current directory only)'}...")
+
+    found_files = []
     file_processor = FileProcessor(args.recursive, extensions)
-    found_files = file_processor.find_files()
+
+    if file_list:
+        # Validate files exist
+        missing_files = [f for f in file_list if not os.path.isfile(f)]
+        if missing_files:
+            print("❌ Error: The following files do not exist:")
+            for f in missing_files:
+                print(f"  • {f}")
+            sys.exit(1)
+        else:
+            found_files = file_list
+            print(f"✅ Using explicitly provided file list ({len(found_files)} files):")
+            for f in found_files:
+                print(f"  • {f}")
+    else:
+        print(f"📂 Finding files {'(recursive)' if args.recursive else '(current directory only)'}...")
+        found_files = file_processor.find_files()
+
+#    print(f"📂 Finding files {'(recursive)' if args.recursive else '(current directory only)'}...")
+#    file_processor = FileProcessor(args.recursive, extensions)
+#    found_files = file_processor.find_files()
     
     if not found_files:
         print(f"No files found with extensions: {', '.join(extensions)}")
+        if file_processor.skipped_directories:
+            print("(Some directories were skipped due to .skip-commander files)")
         sys.exit(1)
     
     print(f"Found {len(found_files)} files:")
     for file in found_files:
         print(f"  • {file}")
+
+    # Step 2a: Read system.txt
+    print("\n📋 Reading system.txt (if exists)...")
+    system_text = read_system_txt()
+    if system_text:
+        print(f"Instructions loaded: {len(system_text)} characters")
     
-    # Step 2: Read instructions
+    # Step 2b: Read instructions
     print("\n📋 Reading instructions from commander.txt...")
     instructions_reader = CommanderInstructions()
     instructions = instructions_reader.read_instructions()
     print(f"Instructions loaded: {len(instructions)} characters")
+
+    # Combine system and commander instructions
+    if system_text:
+        instructions = system_text + "\n\n" + instructions
     
     # Step 3: Read file contents
     print("\n📖 Reading file contents...")
@@ -295,6 +481,10 @@ def main():
     if not files_data:
         print("No files could be read!")
         sys.exit(1)
+
+    # debug - stop for now
+    #print("Exiting")
+    #sys.exit(0)
     
     # Step 4: Process with Gemini
     print("\n🤖 Processing files with Gemini AI...")
@@ -306,12 +496,31 @@ def main():
         sys.exit(1)
     
     print(f"Received response: {len(response)} characters")
+    # Write Gemini response to commander.log
+    try:
+        with open("commander.log", "w", encoding="utf-8") as log_file:
+            log_file.write(response)
+        print(f"✅ Gemini response saved to commander.log ({len(response)} characters)")
+    except Exception as e:
+        print(f"❌ Failed to write commander.log: {e}")
+
+#    print(response)
     
     # Step 5: Parse response and update files
     print("\n🔄 Parsing response and updating files...")
     response_parser = ResponseParser()
     modified_files = response_parser.parse_response(response)
-    
+
+    # Patch - ensure directories exist before writing files
+    for filename in modified_files.keys():
+        file_path = Path(filename)
+        if file_path.parent != Path('.'):
+            try:
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                print(f"📂 Ensured directory exists: {file_path.parent}")
+            except Exception as e:
+                print(f"❌ Failed to create directory {file_path.parent}: {e}")
+            
     if not modified_files:
         print("No files were modified by Gemini.")
         return
@@ -334,6 +543,9 @@ def main():
     
     print("\n✨ Processing complete!")
     print("Backups created with .backup extension")
+    
+    if file_processor.skipped_directories:
+        print(f"\n📁 Note: {len(file_processor.skipped_directories)} directories were skipped due to .skip-commander files")
 
 
 if __name__ == "__main__":
