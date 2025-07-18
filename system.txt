@@ -2,6 +2,7 @@
 # Comments are not sent to AI
 #
 # PROJECT CONTEXT
+This is an MCP (Model Context Protocol) project. The directory tree shown below represents the current project structure.
 
 # RESPONSE REQUIREMENTS
 - Only return complete files that need to be changed
