@@ -1,4 +1,3 @@
-# Commander
 
 ## Introduction
 
@@ -88,6 +87,8 @@ git diff
 | `-r, --recursive` | Process files in subdirectories | `python commander.py -r` |
 | `-x, --extensions` | File extensions to process | `python commander.py -x "py,js,html"` |
 | `-y, --yes` | Auto-confirm changes | `python commander.py -y` |
+| `-m, --model` | Specify the model to use | `python commander.py -m chatgpt` |
+| `-f, --files` | Comma-separated list of files to process | `python commander.py -f "file1.py,file2.js"` |
 
 ## Supported File Types
 
@@ -265,4 +266,3 @@ See the LICENSE file in this respository.
 ---
 
 **Pro Tip**: Start with small, specific instructions in `commander.txt` and gradually increase complexity as you become familiar with how the AI interprets your requests.
-

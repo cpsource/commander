@@ -1,3 +1,6 @@
+commander.json
+commander.txt
+*.backup
 *#
 *~
 zz*
