@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-commander.py - A smart code processor using Gemini 2.5 Pro
+commander.py - A smart code processor using multiple LLM providers
 
 This tool reads files (optionally recursively), reads instructions from
-commander.txt, and applies those instructions to all files using Gemini AI.
+commander.txt, and applies those instructions to all files using various AI models.
 
 Usage:
-    python commander.py [-r] [-x "ext1,ext2,ext3"] [-y]
+    python commander.py [-r] [-x "ext1,ext2,ext3"] [-y] [-m model]
     
     -r: Process files recursively through subdirectories
     -x: Comma-separated list of file extensions (default: "py")
-        Example: -x "py,json,md" or -x "js,html,css"
+        Example: -x "py,json,md" or -x "js,html,css" or -x "docx,txt"
     -y: Automatically confirm file modifications (skip confirmation prompt)
+    -m: Model to use (default: "gemini")
+        Options: gemini, claude, chatgpt, xai, watsonx
     
     .skip-commander: Place this file in any directory to skip processing that directory
 """
@@ -24,21 +26,40 @@ from pathlib import Path
 from typing import List, Dict, Tuple
 import re
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.schema import HumanMessage, SystemMessage
+
+# Determine the script's home directory and add to Python path
+SCRIPT_DIR = Path(__file__).parent.absolute()
+sys.path.insert(0, str(SCRIPT_DIR))
+
+# Import the comutl library
+try:
+    from comutl import get_llm_class, MODEL_REGISTRY
+except ImportError as e:
+    print(f"❌ Error importing comutl library: {e}")
+    print(f"📂 Script directory: {SCRIPT_DIR}")
+    print(f"🐍 Python path: {sys.path}")
+    print("💡 Make sure the comutl/ directory exists in the same location as commander.py")
+    sys.exit(1)
 
 def read_system_txt(filename: str = "system.txt") -> str:
     """Read system.txt, skipping comment lines starting with '#'."""
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        non_comment_lines = [line for line in lines if not line.strip().startswith('#')]
-        return "".join(non_comment_lines).strip()
-    except FileNotFoundError:
-        return ""
-    except Exception as e:
-        print(f"Error reading {filename}: {e}")
-        return ""
+    # Try current directory first, then script directory
+    search_paths = [Path.cwd() / filename, SCRIPT_DIR / filename]
+    
+    for path in search_paths:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            non_comment_lines = [line for line in lines if not line.strip().startswith('#')]
+            print(f"📋 Found {filename} at: {path}")
+            return "".join(non_comment_lines).strip()
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            print(f"Error reading {path}: {e}")
+            continue
+    
+    return ""
 
 class FileProcessor:
     """Handles finding and reading files with specified extensions"""
@@ -138,11 +159,44 @@ class FileProcessor:
         
         return filtered_files
     
+    def read_docx_content(self, file_path: str) -> str:
+        """Read content from a .docx file"""
+        try:
+            import mammoth
+            with open(file_path, 'rb') as docx_file:
+                result = mammoth.extract_raw_text(docx_file)
+                return result.value
+        except ImportError:
+            print(f"⚠️  mammoth library required for .docx files. Install with: pip install mammoth")
+            print(f"⚠️  Skipping {file_path}")
+            return ""
+        except Exception as e:
+            print(f"Warning: Could not read .docx file {file_path}: {e}")
+            return ""
+    
     def read_file_content(self, file_path: str) -> str:
         """Read the content of a file"""
+        file_extension = Path(file_path).suffix.lower()
+        
+        # Handle .docx files specially
+        if file_extension == '.docx':
+            return self.read_docx_content(file_path)
+        
+        # Handle regular text files
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return f.read()
+        except UnicodeDecodeError:
+            # Try different encodings for text files
+            for encoding in ['latin-1', 'cp1252', 'iso-8859-1']:
+                try:
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        print(f"⚠️  Used {encoding} encoding for {file_path}")
+                        return f.read()
+                except UnicodeDecodeError:
+                    continue
+            print(f"Warning: Could not decode {file_path} with any common encoding")
+            return ""
         except Exception as e:
             print(f"Warning: Could not read {file_path}: {e}")
             return ""
@@ -166,7 +220,9 @@ class FileProcessor:
             'sql': 'sql',
             'sh': 'bash',
             'bash': 'bash',
-            'txt': '',  # Plain text, no language specifier
+            'txt': 'text',
+            'docx': 'text',  # .docx files are treated as text
+            'doc': 'text',   # .doc files (if supported in future)
             'c': 'c',
             'cpp': 'cpp',
             'java': 'java',
@@ -176,7 +232,7 @@ class FileProcessor:
             'rs': 'rust',
         }
         
-        return language_map.get(extension, '')
+        return language_map.get(extension, 'text')
 
 
 class CommanderInstructions:
@@ -188,84 +244,34 @@ class CommanderInstructions:
         
     def read_instructions(self) -> str:
         """Read the instructions from commander.txt"""
-        try:
-            with open(self.instructions_file, 'r', encoding='utf-8') as f:
-                self.instructions = f.read().strip()
-                return self.instructions
-        except FileNotFoundError:
-            print(f"Error: {self.instructions_file} not found!")
-            print("Please create commander.txt with your processing instructions.")
-            sys.exit(1)
-        except Exception as e:
-            print(f"Error reading {self.instructions_file}: {e}")
-            sys.exit(1)
-
-
-class GeminiProcessor:
-    """Handles communication with Gemini AI"""
-    
-    def __init__(self, api_key: str):
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-exp",  # Using the latest available model
-            google_api_key=api_key,
-            temperature=0.1  # Low temperature for consistent code generation
-        )
+        # Try current directory first, then script directory
+        search_paths = [Path.cwd() / self.instructions_file, SCRIPT_DIR / self.instructions_file]
         
-    def create_prompt(self, instructions: str, files_data: Dict[str, Tuple[str, str]]) -> str:
-        """Create a comprehensive prompt for Gemini"""
-        prompt = f"""You are a skilled developer tasked with modifying multiple files according to specific instructions.
-
-INSTRUCTIONS:
-{instructions}
-
-FILES TO PROCESS:
-"""
+        for path in search_paths:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    self.instructions = f.read().strip()
+                    print(f"📋 Found {self.instructions_file} at: {path}")
+                    return self.instructions
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                print(f"Error reading {path}: {e}")
+                continue
         
-        for filename, (content, language) in files_data.items():
-            if language:
-                prompt += f"\n---{filename}---\n```{language}\n{content}\n```\n"
-            else:
-                prompt += f"\n---{filename}---\n```\n{content}\n```\n"
-        
-        prompt += """
-
-RESPONSE FORMAT:
-For any files you wish to return in your reply, they must have this format:
-
----<full-file-spec>---
-```<filetype>
-< file contents here >
-```
-
-Only return files that need to be changed. If a file doesn't need modification, don't include it in your response.
-Ensure all code is syntactically correct and follows best practices for the respective language.
-"""
-        
-        return prompt
-    
-    def process_files(self, instructions: str, files_data: Dict[str, Tuple[str, str]]) -> str:
-        """Send files to Gemini for processing"""
-        prompt = self.create_prompt(instructions, files_data)
-        
-        try:
-            messages = [
-                SystemMessage(content="You are an expert developer who carefully modifies code according to instructions."),
-                HumanMessage(content=prompt)
-            ]
-            
-            response = self.llm.invoke(messages)
-            return response.content
-            
-        except Exception as e:
-            print(f"Error communicating with Gemini: {e}")
-            return ""
+        print(f"Error: {self.instructions_file} not found!")
+        print("Searched in:")
+        for path in search_paths:
+            print(f"  • {path}")
+        print(f"Please create {self.instructions_file} with your processing instructions.")
+        sys.exit(1)
 
 
 class ResponseParser:
-    """Parses Gemini's response and extracts modified files"""
+    """Parses LLM response and extracts modified files"""
 
     def parse_response(self, response: str) -> Dict[str, str]:
-        """Parse Gemini's response and extract modified files using simple line-by-line approach."""
+        """Parse LLM response and extract modified files using simple line-by-line approach."""
         modified_files = {}
         
         # Convert response to lines for processing
@@ -356,6 +362,11 @@ class ResponseParser:
                     os.rename(filename, backup_name)
                     print(f"📁 Created backup: {backup_name}")
                 
+                # Check if this is a .docx file - we can't write those back
+                if filename.lower().endswith('.docx'):
+                    print(f"⚠️  Cannot write back to .docx format. Saving as {filename}.txt instead")
+                    filename = f"{filename}.txt"
+                
                 # Write new content
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(content)
@@ -378,26 +389,56 @@ def parse_extensions(extensions_string: str) -> List[str]:
     return extensions if extensions else ['py']
 
 
-def main():
-    """Main execution function"""
-    # Load environment variables
-    load_dotenv(os.path.expanduser("~/.env"))
+def get_api_key_for_model(model_name: str) -> str:
+    """Get the appropriate API key for the specified model"""
+    # Mapping of model names to their expected environment variables
+    env_var_map = {
+        'gemini': 'GOOGLE_API_KEY',
+        'claude': 'ANTHROPIC_API_KEY',
+        'chatgpt': 'OPENAI_API_KEY',
+        'xai': 'XAI_API_KEY',
+        'watsonx': 'WATSONX_API_KEY'
+    }
     
-    # Get API key
-    api_key = os.getenv("GOOGLE_API_KEY")
+    env_var = env_var_map.get(model_name)
+    if not env_var:
+        raise ValueError(f"Unknown model: {model_name}")
+    
+    api_key = os.getenv(env_var)
     if not api_key:
-        print("Error: GOOGLE_API_KEY not found in ~/.env file")
-        print("Please add your Google API key to ~/.env as: GOOGLE_API_KEY=your_key_here")
+        print(f"Error: {env_var} not found in ~/.env file")
+        print(f"Please add your {model_name} API key to ~/.env as: {env_var}=your_key_here")
         sys.exit(1)
     
+    return api_key
+
+
+def main():
+    """Main execution function"""
+    # Load environment variables from multiple locations
+    env_paths = [
+        os.path.expanduser("~/.env"),  # User home directory
+        Path.cwd() / ".env",           # Current working directory
+        SCRIPT_DIR / ".env"            # Script directory
+    ]
+    
+    for env_path in env_paths:
+        if Path(env_path).exists():
+            load_dotenv(env_path)
+            print(f"🔧 Loaded environment from: {env_path}")
+            break
+    
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Process files with Gemini AI")
+    parser = argparse.ArgumentParser(description="Process files with various LLM providers")
     parser.add_argument("-r", "--recursive", action="store_true", 
                        help="Process files recursively through subdirectories")
     parser.add_argument("-x", "--extensions", type=str, default="py",
-                       help="Comma-separated list of file extensions (default: py). Example: 'py,json,md'")
+                       help="Comma-separated list of file extensions (default: py). Example: 'py,json,md,docx'")
     parser.add_argument("-y", "--yes", action="store_true",
                        help="Automatically confirm file modifications (skip confirmation prompt)")
+    parser.add_argument("-m", "--model", type=str, default="gemini",
+                       choices=list(MODEL_REGISTRY.keys()),
+                       help=f"Model to use (default: gemini). Options: {', '.join(MODEL_REGISTRY.keys())}")
     parser.add_argument("-f", "--files", type=str,
                         help="Comma-separated list of files to process instead of searching the directory tree."
     )
@@ -411,13 +452,32 @@ def main():
     # Parse extensions
     extensions = parse_extensions(args.extensions)
     
+    # Get API key for selected model
+    api_key = get_api_key_for_model(args.model)
+    
+    # Get additional config for WatsonX
+    additional_config = {}
+    if args.model == 'watsonx':
+        project_id = os.getenv('WATSONX_PROJECT_ID')
+        if not project_id:
+            print("Error: WATSONX_PROJECT_ID not found in ~/.env file")
+            print("Please add your WatsonX project ID to ~/.env as: WATSONX_PROJECT_ID=your_project_id")
+            sys.exit(1)
+        additional_config['project_id'] = project_id
+    
     print("🚀 Commander.py - Multi-Language File Processor")
     print("=" * 50)
+    print(f"📂 Script directory: {SCRIPT_DIR}")
+    print(f"📂 Working directory: {Path.cwd()}")
+    print(f"🤖 Using model: {args.model}")
     print(f"📋 Target extensions: {', '.join(extensions)}")
     print(f"💡 Tip: Place '.skip-commander' file in directories to skip them")
     
+    # Check if docx files are being processed and warn about mammoth dependency
+    if 'docx' in extensions:
+        print(f"📄 Note: .docx files require 'mammoth' library. Install with: pip install mammoth")
+    
     # Step 1: Find files
-
     found_files = []
     file_processor = FileProcessor(args.recursive, extensions)
 
@@ -437,10 +497,6 @@ def main():
     else:
         print(f"📂 Finding files {'(recursive)' if args.recursive else '(current directory only)'}...")
         found_files = file_processor.find_files()
-
-#    print(f"📂 Finding files {'(recursive)' if args.recursive else '(current directory only)'}...")
-#    file_processor = FileProcessor(args.recursive, extensions)
-#    found_files = file_processor.find_files()
     
     if not found_files:
         print(f"No files found with extensions: {', '.join(extensions)}")
@@ -481,32 +537,70 @@ def main():
     if not files_data:
         print("No files could be read!")
         sys.exit(1)
-
-    # debug - stop for now
-    #print("Exiting")
-    #sys.exit(0)
     
-    # Step 4: Process with Gemini
-    print("\n🤖 Processing files with Gemini AI...")
-    gemini_processor = GeminiProcessor(api_key)
-    response = gemini_processor.process_files(instructions, files_data)
+    # Step 4: Initialize LLM processor
+    print(f"\n🤖 Initializing {args.model} LLM processor...")
+    try:
+        llm_class = get_llm_class(args.model)
+        llm_processor = llm_class(api_key, **additional_config)
+        print(f"✅ {llm_processor.model_name} processor initialized")
+    except Exception as e:
+        print(f"❌ Error initializing {args.model} processor: {e}")
+        sys.exit(1)
+    
+    # Step 5: Process with LLM
+    print(f"\n🤖 Processing files with {llm_processor.model_name}...")
+    response = llm_processor.process_files(instructions, files_data)
     
     if not response:
-        print("No response from Gemini!")
+        print("No response from LLM!")
         sys.exit(1)
     
     print(f"Received response: {len(response)} characters")
-    # Write Gemini response to commander.log
+ 
+    # Write LLM response to commander.log (in current working directory)
+    log_file_path = Path.cwd() / "commander.log"
     try:
-        with open("commander.log", "w", encoding="utf-8") as log_file:
+        with open(log_file_path, "w", encoding="utf-8") as log_file:
             log_file.write(response)
-        print(f"✅ Gemini response saved to commander.log ({len(response)} characters)")
+        print(f"✅ LLM response saved to {log_file_path} ({len(response)} characters)")
     except Exception as e:
-        print(f"❌ Failed to write commander.log: {e}")
+        print(f"❌ Failed to write {log_file_path}: {e}")
 
-#    print(response)
+    # Write pretty-printed JSON metadata to commander.json (in current working directory)
+    json_file_path = Path.cwd() / "commander.json"
+    try:
+        import json
+        from datetime import datetime
     
-    # Step 5: Parse response and update files
+        # Create metadata about the processing session
+        metadata = {
+            "timestamp": datetime.now().isoformat(),
+            "script_directory": str(SCRIPT_DIR),
+            "working_directory": str(Path.cwd()),
+            "model": args.model,
+            "model_name": llm_processor.model_name,
+            "files_processed": list(files_data.keys()),
+            "file_count": len(files_data),
+            "extensions": extensions,
+            "recursive": args.recursive,
+            "instructions_length": len(instructions),
+            "response_length": len(response),
+            "modified_files": list(modified_files.keys()) if 'modified_files' in locals() else [],
+            "settings": {
+                "auto_confirm": args.yes,
+                "files_parameter": args.files if args.files else None
+            }
+        }
+    
+        with open(json_file_path, "w", encoding="utf-8") as json_file:
+            json.dump(metadata, json_file, indent=2, ensure_ascii=False)
+        print(f"✅ Processing metadata saved to {json_file_path}")
+    
+    except Exception as e:
+        print(f"❌ Failed to write {json_file_path}: {e}")
+
+    # Step 6: Parse response and update files
     print("\n🔄 Parsing response and updating files...")
     response_parser = ResponseParser()
     modified_files = response_parser.parse_response(response)
@@ -522,7 +616,7 @@ def main():
                 print(f"❌ Failed to create directory {file_path.parent}: {e}")
             
     if not modified_files:
-        print("No files were modified by Gemini.")
+        print("No files were modified by LLM.")
         return
     
     print(f"Files to be modified: {len(modified_files)}")
@@ -543,6 +637,7 @@ def main():
     
     print("\n✨ Processing complete!")
     print("Backups created with .backup extension")
+    print(f"📄 Log files saved to: {Path.cwd()}")
     
     if file_processor.skipped_directories:
         print(f"\n📁 Note: {len(file_processor.skipped_directories)} directories were skipped due to .skip-commander files")
@@ -550,3 +645,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
