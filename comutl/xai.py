@@ -22,7 +22,7 @@ class XaiLLM(BaseLLM):
             raise ImportError("openai is required for xAI. Install with: pip install openai")
         
         # Default model and temperature
-        self.model = kwargs.get('model', 'grok-beta')
+        self.model = kwargs.get('model', 'grok-4-latest')
         self.temperature = kwargs.get('temperature', 0.1)
         self.max_tokens = kwargs.get('max_tokens', 4096)
         

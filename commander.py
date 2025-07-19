@@ -266,8 +266,354 @@ class CommanderInstructions:
         print(f"Please create {self.instructions_file} with your processing instructions.")
         sys.exit(1)
 
-
 class ResponseParser:
+    """Parses LLM response and extracts modified files with optional debugging"""
+    
+    def __init__(self, use_debugging: bool = False):
+        self.use_debugging = use_debugging
+
+    def parse_response(self, response: str) -> Dict[str, str]:
+        """Parse LLM response and extract modified files using simple line-by-line approach."""
+        modified_files = {}
+        
+        if self.use_debugging:
+            print(f"🔍 DEBUG: Full response length: {len(response)}")
+            print(f"🔍 DEBUG: Full response:")
+            print("=" * 50)
+            print(repr(response))  # Show exact characters including newlines
+            print("=" * 50)
+        
+        # Convert response to lines for processing
+        lines = response.split('\n')
+        
+        if self.use_debugging:
+            print(f"🔍 DEBUG: Split into {len(lines)} lines:")
+            for idx, line in enumerate(lines):
+                print(f"  Line {idx}: {repr(line)}")
+        
+        i = 0
+        # Skip first line if it's ```tool_code
+        if i < len(lines) and lines[i].strip() == '```tool_code':
+            print("✅ Skipping ```tool_code line")
+            i = 1
+        
+        current_file = None
+        file_content = []
+        
+        while i < len(lines):
+            line = lines[i]
+            line_stripped = line.strip()
+            
+            if self.use_debugging:
+                print(f"🔍 DEBUG: Processing line {i}: {repr(line)} (stripped: {repr(line_stripped)})")
+            
+            # Check if we're starting a new file
+            if line_stripped.startswith('---') and line_stripped.endswith('---') and current_file is None:
+                # Extract filespec by chopping off first 3 and last 3 characters
+                filespec = line_stripped[3:-3]
+                print(f"📄 Found file: {filespec}")
+                
+                # Skip the next line (the ```<type> line)
+                i += 1
+                if i < len(lines):
+                    print(f"   Skipping line {i}: {repr(lines[i])}" if self.use_debugging else f"   Skipping: {lines[i].strip()}")
+                    i += 1
+                
+                # Start collecting content for this file
+                current_file = filespec
+                file_content = []
+                print(f"✍️  Processing: {filespec}")
+                continue
+            
+            # Check if we're ending current file
+            elif line_stripped == '```' and current_file is not None:
+                if self.use_debugging:
+                    print(f"🔍 DEBUG: Found closing ``` for file {current_file}")
+                    print(f"🔍 DEBUG: Current file_content has {len(file_content)} lines: {file_content}")
+                
+                # Check if next line is a new file OR we're at end of response
+                next_line_is_new_file_or_eof = False
+                if (i + 1) < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if self.use_debugging:
+                        print(f"🔍 DEBUG: Next line {i+1}: {repr(next_line)}")
+                    if next_line.startswith('---') and next_line.endswith('---'):
+                        next_line_is_new_file_or_eof = True
+                        if self.use_debugging:
+                            print("🔍 DEBUG: Next line is a new file")
+                    elif not next_line:  # Empty line after ``` - check line after that
+                        if (i + 2) >= len(lines):  # No more lines after empty line
+                            next_line_is_new_file_or_eof = True
+                            if self.use_debugging:
+                                print("🔍 DEBUG: Empty line and EOF")
+                        else:
+                            next_next_line = lines[i + 2].strip()
+                            if self.use_debugging:
+                                print(f"🔍 DEBUG: Line after empty {i+2}: {repr(next_next_line)}")
+                            if next_next_line.startswith('---') and next_next_line.endswith('---'):
+                                next_line_is_new_file_or_eof = True
+                                if self.use_debugging:
+                                    print("🔍 DEBUG: Line after empty is new file")
+                    else:
+                        if self.use_debugging:
+                            print("🔍 DEBUG: Next line is not empty and not new file")
+                else:
+                    # We are at end-of-file
+                    next_line_is_new_file_or_eof = True
+                    if self.use_debugging:
+                        print("🔍 DEBUG: At end of file")
+
+                if next_line_is_new_file_or_eof:
+                    # Do NOT store this ``` line
+                    content = '\n'.join(file_content)
+                    modified_files[current_file] = content
+                    print(f"✅ Completed: {current_file} ({len(content)} characters)")
+                    if self.use_debugging:
+                        print(f"🔍 DEBUG: File content: {repr(content)}")
+                    current_file = None
+                    file_content = []
+                    i += 1  # skip the ``` line
+                    continue
+                else:
+                    # This ``` belongs in the file content
+                    if self.use_debugging:
+                        print("🔍 DEBUG: ``` belongs to file content")
+                    file_content.append(line)
+            
+            # Collect content for current file
+            elif current_file is not None:
+                if self.use_debugging:
+                    print(f"🔍 DEBUG: Adding to file content: {repr(line)}")
+                file_content.append(line)
+            else:
+                if self.use_debugging:
+                    print(f"🔍 DEBUG: Ignoring line outside file: {repr(line)}")
+            
+            i += 1
+        
+        # Handle any remaining open file (EOF case)
+        if current_file is not None:
+            if self.use_debugging:
+                print(f"🔍 DEBUG: EOF - finishing file {current_file} with {len(file_content)} lines")
+                print(f"🔍 DEBUG: Final file_content: {file_content}")
+            content = '\n'.join(file_content)
+            modified_files[current_file] = content
+            print(f"✅ Completed: {current_file} (EOF) ({len(content)} characters)")
+            if self.use_debugging:
+                print(f"🔍 DEBUG: Final content: {repr(content)}")
+        
+        if self.use_debugging:
+            print(f"🔍 FINAL DEBUG: Found {len(modified_files)} files total")
+            for filename, content in modified_files.items():
+                print(f"  📄 {filename}: {len(content)} chars")
+                print(f"     Content: {repr(content)}")
+        
+        return modified_files
+    
+    def write_modified_files(self, modified_files: Dict[str, str]) -> None:
+        """Write the modified files back to disk"""
+        if self.use_debugging:
+            print(f"🔍 DEBUG: write_modified_files called with {len(modified_files)} files")
+        
+        for filename, content in modified_files.items():
+            if self.use_debugging:
+                print(f"🔍 DEBUG: Writing file {filename} with content: {repr(content)}")
+            try:
+                # Ensure directory structure exists (equivalent to mkdir -p)
+                file_path = Path(filename)
+                if file_path.parent != Path('.'):  # Only if not in current directory
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    print(f"📂 Created directory: {file_path.parent}")
+                
+                # Create backup
+                backup_name = f"{filename}.backup"
+                if os.path.exists(filename):
+                    os.rename(filename, backup_name)
+                    print(f"📁 Created backup: {backup_name}")
+                
+                # Check if this is a .docx file - we can't write those back
+                if filename.lower().endswith('.docx'):
+                    print(f"⚠️  Cannot write back to .docx format. Saving as {filename}.txt instead")
+                    filename = f"{filename}.txt"
+                
+                # Write new content
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                print(f"✅ Updated: {filename}")
+                
+                # Verify the file was written (only in debug mode)
+                if self.use_debugging:
+                    with open(filename, 'r', encoding='utf-8') as f:
+                        written_content = f.read()
+                        print(f"🔍 DEBUG: Verified file contents: {repr(written_content)}")
+                
+            except Exception as e:
+                print(f"❌ Error writing {filename}: {e}")
+                if self.use_debugging:
+                    import traceback
+                    traceback.print_exc()        
+        
+class ResponseParser2:
+    """Parses LLM response and extracts modified files with detailed debugging"""
+
+    def parse_response(self, response: str) -> Dict[str, str]:
+        """Parse LLM response and extract modified files using simple line-by-line approach."""
+        modified_files = {}
+        
+        print(f"🔍 DEBUG: Full response length: {len(response)}")
+        print(f"🔍 DEBUG: Full response:")
+        print("=" * 50)
+        print(repr(response))  # Show exact characters including newlines
+        print("=" * 50)
+        
+        # Convert response to lines for processing
+        lines = response.split('\n')
+        print(f"🔍 DEBUG: Split into {len(lines)} lines:")
+        for idx, line in enumerate(lines):
+            print(f"  Line {idx}: {repr(line)}")
+        
+        i = 0
+        # Skip first line if it's ```tool_code
+        if i < len(lines) and lines[i].strip() == '```tool_code':
+            print("✅ Skipping ```tool_code line")
+            i = 1
+        
+        current_file = None
+        file_content = []
+        
+        while i < len(lines):
+            line = lines[i]
+            line_stripped = line.strip()
+            print(f"🔍 DEBUG: Processing line {i}: {repr(line)} (stripped: {repr(line_stripped)})")
+            
+            # Check if we're starting a new file
+            if line_stripped.startswith('---') and line_stripped.endswith('---') and current_file is None:
+                # Extract filespec by chopping off first 3 and last 3 characters
+                filespec = line_stripped[3:-3]
+                print(f"📄 Found file: {filespec}")
+                
+                # Skip the next line (the ```<type> line)
+                i += 1
+                if i < len(lines):
+                    print(f"   Skipping line {i}: {repr(lines[i])}")
+                    i += 1
+                
+                # Start collecting content for this file
+                current_file = filespec
+                file_content = []
+                print(f"✍️  Processing: {filespec}")
+                continue
+            
+            # Check if we're ending current file
+            elif line_stripped == '```' and current_file is not None:
+                print(f"🔍 DEBUG: Found closing ``` for file {current_file}")
+                print(f"🔍 DEBUG: Current file_content has {len(file_content)} lines: {file_content}")
+                
+                # Check if next line is a new file OR we're at end of response
+                next_line_is_new_file_or_eof = False
+                if (i + 1) < len(lines):
+                    next_line = lines[i + 1].strip()
+                    print(f"🔍 DEBUG: Next line {i+1}: {repr(next_line)}")
+                    if next_line.startswith('---') and next_line.endswith('---'):
+                        next_line_is_new_file_or_eof = True
+                        print("🔍 DEBUG: Next line is a new file")
+                    elif not next_line:  # Empty line after ``` - check line after that
+                        if (i + 2) >= len(lines):  # No more lines after empty line
+                            next_line_is_new_file_or_eof = True
+                            print("🔍 DEBUG: Empty line and EOF")
+                        else:
+                            next_next_line = lines[i + 2].strip()
+                            print(f"🔍 DEBUG: Line after empty {i+2}: {repr(next_next_line)}")
+                            if next_next_line.startswith('---') and next_next_line.endswith('---'):
+                                next_line_is_new_file_or_eof = True
+                                print("🔍 DEBUG: Line after empty is new file")
+                    else:
+                        print("🔍 DEBUG: Next line is not empty and not new file")
+                else:
+                    # We are at end-of-file
+                    next_line_is_new_file_or_eof = True
+                    print("🔍 DEBUG: At end of file")
+
+                if next_line_is_new_file_or_eof:
+                    # Do NOT store this ``` line
+                    content = '\n'.join(file_content)
+                    modified_files[current_file] = content
+                    print(f"✅ Completed: {current_file} ({len(content)} characters)")
+                    print(f"🔍 DEBUG: File content: {repr(content)}")
+                    current_file = None
+                    file_content = []
+                    i += 1  # skip the ``` line
+                    continue
+                else:
+                    # This ``` belongs in the file content
+                    print("🔍 DEBUG: ``` belongs to file content")
+                    file_content.append(line)
+            
+            # Collect content for current file
+            elif current_file is not None:
+                print(f"🔍 DEBUG: Adding to file content: {repr(line)}")
+                file_content.append(line)
+            else:
+                print(f"🔍 DEBUG: Ignoring line outside file: {repr(line)}")
+            
+            i += 1
+        
+        # Handle any remaining open file (EOF case)
+        if current_file is not None:
+            print(f"🔍 DEBUG: EOF - finishing file {current_file} with {len(file_content)} lines")
+            print(f"🔍 DEBUG: Final file_content: {file_content}")
+            content = '\n'.join(file_content)
+            modified_files[current_file] = content
+            print(f"✅ Completed: {current_file} (EOF) ({len(content)} characters)")
+            print(f"🔍 DEBUG: Final content: {repr(content)}")
+        
+        print(f"🔍 FINAL DEBUG: Found {len(modified_files)} files total")
+        for filename, content in modified_files.items():
+            print(f"  📄 {filename}: {len(content)} chars")
+            print(f"     Content: {repr(content)}")
+        
+        return modified_files
+    
+    def write_modified_files(self, modified_files: Dict[str, str]) -> None:
+        """Write the modified files back to disk"""
+        print(f"🔍 DEBUG: write_modified_files called with {len(modified_files)} files")
+        
+        for filename, content in modified_files.items():
+            print(f"🔍 DEBUG: Writing file {filename} with content: {repr(content)}")
+            try:
+                # Ensure directory structure exists (equivalent to mkdir -p)
+                file_path = Path(filename)
+                if file_path.parent != Path('.'):  # Only if not in current directory
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    print(f"📂 Created directory: {file_path.parent}")
+                
+                # Create backup
+                backup_name = f"{filename}.backup"
+                if os.path.exists(filename):
+                    os.rename(filename, backup_name)
+                    print(f"📁 Created backup: {backup_name}")
+                
+                # Check if this is a .docx file - we can't write those back
+                if filename.lower().endswith('.docx'):
+                    print(f"⚠️  Cannot write back to .docx format. Saving as {filename}.txt instead")
+                    filename = f"{filename}.txt"
+                
+                # Write new content
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                print(f"✅ Updated: {filename}")
+                
+                # Verify the file was written
+                with open(filename, 'r', encoding='utf-8') as f:
+                    written_content = f.read()
+                    print(f"🔍 DEBUG: Verified file contents: {repr(written_content)}")
+                
+            except Exception as e:
+                print(f"❌ Error writing {filename}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+class ResponseParser1:
     """Parses LLM response and extracts modified files"""
 
     def parse_response(self, response: str) -> Dict[str, str]:
@@ -309,12 +655,19 @@ class ResponseParser:
             
             # Check if we're ending current file
             elif line_stripped == '```' and current_file is not None:
-                # Determine whether we should skip this ``` line
+                # Check if next line is a new file OR we're at end of response
                 next_line_is_new_file_or_eof = False
                 if (i + 1) < len(lines):
                     next_line = lines[i + 1].strip()
                     if next_line.startswith('---') and next_line.endswith('---'):
                         next_line_is_new_file_or_eof = True
+                    elif not next_line:  # Empty line after ``` - check line after that
+                        if (i + 2) >= len(lines):  # No more lines after empty line
+                            next_line_is_new_file_or_eof = True
+                        else:
+                            next_next_line = lines[i + 2].strip()
+                            if next_next_line.startswith('---') and next_next_line.endswith('---'):
+                                next_line_is_new_file_or_eof = True
                 else:
                     # We are at end-of-file
                     next_line_is_new_file_or_eof = True
@@ -338,11 +691,16 @@ class ResponseParser:
             
             i += 1
         
-        # Handle any remaining open file (EOF case)
-        if current_file is not None and file_content:
+        # IMPROVED: Handle any remaining open file (EOF case) - even without final newline
+        if current_file is not None:
             content = '\n'.join(file_content)
             modified_files[current_file] = content
-            print(f"✅ Completed: {current_file} (EOF) ({len(content)} characters)")
+            print(f"✅ Completed: {current_file} (EOF without final newline) ({len(content)} characters)")
+        
+        # Additional debug info
+        print(f"🔍 Parser debug: Found {len(modified_files)} files in response")
+        for filename, content in modified_files.items():
+            print(f"  📄 {filename}: {len(content)} chars, ends with: {repr(content[-20:]) if content else 'empty'}")
         
         return modified_files
     
@@ -373,9 +731,8 @@ class ResponseParser:
                 print(f"✅ Updated: {filename}")
                 
             except Exception as e:
-                print(f"❌ Error writing {filename}: {e}")
-
-
+                print(f"❌ Error writing {filename}: {e}")        
+        
 def parse_extensions(extensions_string: str) -> List[str]:
     """Parse comma-separated extensions string into a list"""
     if not extensions_string:
@@ -567,7 +924,23 @@ def main():
     except Exception as e:
         print(f"❌ Failed to write {log_file_path}: {e}")
 
+    # Step 6: Parse response and update files
+    print("\n🔄 Parsing response and updating files...")
+    response_parser = ResponseParser()
+    modified_files = response_parser.parse_response(response)
+
+    # Patch - ensure directories exist before writing files
+    for filename in modified_files.keys():
+        file_path = Path(filename)
+        if file_path.parent != Path('.'):
+            try:
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                print(f"📂 Ensured directory exists: {file_path.parent}")
+            except Exception as e:
+                print(f"❌ Failed to create directory {file_path.parent}: {e}")
+
     # Write pretty-printed JSON metadata to commander.json (in current working directory)
+    # MOVED HERE - after modified_files is defined
     json_file_path = Path.cwd() / "commander.json"
     try:
         import json
@@ -586,7 +959,8 @@ def main():
             "recursive": args.recursive,
             "instructions_length": len(instructions),
             "response_length": len(response),
-            "modified_files": list(modified_files.keys()) if 'modified_files' in locals() else [],
+            "modified_files": list(modified_files.keys()),  # Now this works correctly
+            "modified_files_count": len(modified_files),    # Added count for easier reference
             "settings": {
                 "auto_confirm": args.yes,
                 "files_parameter": args.files if args.files else None
@@ -599,21 +973,6 @@ def main():
     
     except Exception as e:
         print(f"❌ Failed to write {json_file_path}: {e}")
-
-    # Step 6: Parse response and update files
-    print("\n🔄 Parsing response and updating files...")
-    response_parser = ResponseParser()
-    modified_files = response_parser.parse_response(response)
-
-    # Patch - ensure directories exist before writing files
-    for filename in modified_files.keys():
-        file_path = Path(filename)
-        if file_path.parent != Path('.'):
-            try:
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                print(f"📂 Ensured directory exists: {file_path.parent}")
-            except Exception as e:
-                print(f"❌ Failed to create directory {file_path.parent}: {e}")
             
     if not modified_files:
         print("No files were modified by LLM.")
@@ -645,4 +1004,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
