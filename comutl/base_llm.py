@@ -1,18 +1,19 @@
 """
-Base LLM class that defines the interface for all LLM providers
+Enhanced Base LLM class that captures response metadata
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional, Any
 
 
 class BaseLLM(ABC):
-    """Abstract base class for all LLM providers"""
+    """Abstract base class for all LLM providers with metadata capture"""
     
     def __init__(self, api_key: str, **kwargs):
         """Initialize the LLM with API key and optional parameters"""
         self.api_key = api_key
         self.kwargs = kwargs
+        self.last_response_metadata = {}  # Store metadata from last API call
     
     @abstractmethod
     def process_files(self, instructions: str, files_data: Dict[str, Tuple[str, str]]) -> str:
@@ -27,6 +28,15 @@ class BaseLLM(ABC):
             The AI model's response as a string
         """
         pass
+    
+    def get_last_response_metadata(self) -> Dict[str, Any]:
+        """
+        Get metadata from the last API response
+        
+        Returns:
+            Dictionary containing token counts, costs, timing, etc.
+        """
+        return self.last_response_metadata.copy()
     
     def create_prompt(self, instructions: str, files_data: Dict[str, Tuple[str, str]]) -> str:
         """Create a comprehensive prompt for the LLM"""
@@ -71,4 +81,3 @@ Ensure all code is syntactically correct and follows best practices for the resp
     def required_env_vars(self) -> list:
         """Return list of required environment variables"""
         pass
-
