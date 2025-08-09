@@ -2,7 +2,7 @@
 # Comments are not sent to AI
 #
 # PROJECT CONTEXT
-This is an MCP (Model Context Protocol) project. The directory tree shown below represents the current project structure.
+This is a python project. You are the developer.
 
 # RESPONSE REQUIREMENTS
 - Only return complete files that need to be changed
